@@ -13,6 +13,7 @@ enum TokenType
 {
     // order matters (see 'expected')
     END,
+    COMMAND,
     OPEN_PAREN,
     NUMBER,
     FUNCTION,
@@ -41,6 +42,7 @@ struct Token
         result_t number;
         Operator op;
         Function *func;
+        Command *cmd;
     };
 
     Token(TokenType _type) :
@@ -57,6 +59,10 @@ struct Token
     Token(Function *_func) :
         type { FUNCTION },
         func { _func } {}
+
+    Token(Command *_cmd) :
+        type { COMMAND },
+        cmd { _cmd } {}
 
     bool operator== (TokenType _type) const
     {
@@ -117,6 +123,10 @@ struct Token
             break;
         case OPERATOR:
             stream << ' ' << self.op.value << ' ';
+            break;
+        case FUNCTION:
+            stream << self.func->name();
+            break;
         default:;
         }
         return stream;
@@ -128,7 +138,7 @@ class Tokenizer
 {
     const char *formula;
     size_t idx = 0;
-    TokenType expected = NUMBER;
+    TokenType expected = COMMAND;
 
 public:
     Tokenizer(const char *_formula)
@@ -195,6 +205,16 @@ public:
             if (!formula[++idx])
                 return END;
 
+        if (expected == COMMAND) {
+            size_t len;
+            Command *cmd = Commands::find(&formula[idx], len);
+            if (cmd) {
+                idx += len;
+                expected = NUMBER;
+                return cmd;
+            }
+        }
+
         char c = formula[idx];
 
         if (expected < OPERATOR) {
@@ -214,7 +234,7 @@ public:
             }
 
             size_t len;
-            Function *f = Function::find(&formula[idx], len);
+            Function *f = Functions::find(&formula[idx], len);
             if (f) {
                 idx += len;
                 expected = OPEN_PAREN;
@@ -297,10 +317,16 @@ class Calc
     };
     vector<StackItem> stack;
 
+    Command *command = nullptr;
+
 public:
     void parse(Tokenizer formula)
     {
         while (Token t = formula.next_token()) {
+            if (t == COMMAND) {
+                command = t.cmd;
+                continue;
+            }
             if (t == OPEN_PAREN) {
                 stack.push_back(StackItem(root, start, saved));
                 root = nullptr;
@@ -309,47 +335,54 @@ public:
             }
             if (t == CLOSE_PAREN) {
                 if (stack.empty())
-                    formula.throw_error("buffer::string '('");
+                    formula.throw_error("Missed '('");
+
                 Node_p old_root = stack.back().root;
                 Node_p old_start = stack.back().start;
-                saved = stack.back().saved;
+                Node_p old_saved = stack.back().saved;
                 stack.pop_back();
                 if (root->token == OPERATOR)
                     root->token.op.prioritize = true;
                 if (!old_root)
                     continue;
+
                 assert(!old_root->parent);
-                // put function into root
-            #if 0
+
+                // put function into parens lowest priority root
                 if (old_root->right) {
+                    Node_p lowest_root = saved ? saved : root;
                     assert(old_root->right->token == FUNCTION);
-                    old_root->parent = old_root->right;
+                    lowest_root->parent = old_root->right;
+                    start->right = old_root->right;
                     old_root->right = start;
-                    old_root = old_root->parent;
-                } else if (old_root->token == FUNCTION) {
-#if 0
-                    root->parent = old_root;
-                    root = root->parent;
+                    root = old_saved ? old_saved : old_root;
+                    start = old_start;
+                    saved = nullptr;
                     continue;
-#endif
-                    assert(!old_root->right);
-                    old_root->right = start;
-                } else {
-                    assert(!old_root->right);
-                    old_root->right = start;
                 }
-            #endif
+                if (old_root->token == FUNCTION) {
+                    if (saved) {
+                        saved->parent = old_root;
+                        saved = old_root;
+                    } else {
+                        root->parent = old_root;
+                        root = old_root;
+                    }
+                    continue;
+                }
+
                 assert(!old_root->right);
                 old_root->right = start;
                 root = old_root;
                 start = old_start;
+                saved = old_saved;
                 continue;
             }
             if (t == NUMBER || t == FUNCTION) {
                 if (root) {
                     assert(!root->right);
                     root->right = make_shared<Node>(t);
-                    if (saved) { // check for FUNCTION
+                    if (saved && t == NUMBER) {
                         root = saved;
                         saved = nullptr;
                     }
@@ -367,8 +400,10 @@ public:
                     // current operator takes precedence
                     assert(root->right);
                     if (root->right->right) {
+                        assert(!root->right->right->parent);
                         root->right->right->parent = node;
                     } else {
+                        assert(!root->right->parent);
                         root->right->parent = node;
                     }
                     root->right->right = node;
@@ -379,8 +414,12 @@ public:
                 root = node;
             }
         } // while
+
+        if (command)
+            command->parse_finished(this);
+
         if (!stack.empty())
-            formula.throw_error("buffer::string ')'!");
+            formula.throw_error("Missed ')'!");
     }
 
     result_t calculate()
@@ -402,7 +441,7 @@ public:
             }
             if (node->token == FUNCTION) {
                 assert(!node->right);
-                cout << "func(" << result << ")";
+                cout << node->token << "(" << result << ")";
                 result = node->token(result);
                 cout << " = " << result << endl;
                 node = node->parent;
@@ -439,34 +478,18 @@ public:
         return result;
     }
 
-    void dumper();
+    void dump() const
+    {
+        cout << *start << endl;
+    }
 };
 
-void Calc::dumper()
+void Dump::parse_finished(void *opaque)
 {
-    Node_p node = start;
-    result_t result = 0;
-    stack.clear();
-    cout << *start << endl;
-    return;
-    while (node || !stack.empty()) {
-        if (!node) {
-            node = stack.back().root;
-            node->right->parent = nullptr;
-            result = stack.back().result;
-            stack.pop_back();
-        }
-        //cout << "Node: " << *node << endl;
-        //cout << "  parent: " << *node->parent << endl;
-        //cout << "  right: " << *node->right << endl;
-        if (node->right && node->right->parent) {
-            stack.push_back(StackItem(node, result));
-            node = node->right->parent;
-            continue;
-        }
-        node = node->parent;
-    }
+    assert(opaque);
+    static_cast<Calc *>(opaque)->dump();
 }
+
 
 void test()
 {
@@ -476,8 +499,11 @@ void test()
         // result_t res = c("(((100))) - 2 * ((3 + 1) + (2 + 16 / 4)) * (11 - 6 - 1000 * 0)");
         // result_t res = c("1 + sqrt(10 - 2 * 3)");
         //c.parse("1 + 5* (2 - 3) * 4");
-        c.parse("1 + 2 * (3 + 4 + 5)");
-        c.dumper();
+        //c.parse("1 + 2 * (3 + 4 + 5)");
+        //1+2*sqrt(1+8)/(4 + (2 - 3))
+        //  1 - 2 * sqrt(9) + 7
+        c.parse("1 - 2 * sqrt(9) + 7");
+        c.dump();
         result_t res = c.calculate();
         cout << "Result: " << res << endl;
         // 2 * (5 - 4 / 2 - 1)
