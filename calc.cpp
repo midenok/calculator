@@ -311,6 +311,7 @@ public:
                     saved = root;
                 } else {
                     root->parent = node;
+                    start->right = node;
                 }
                 root = node;
             }
@@ -356,6 +357,7 @@ public:
     {
         root = nullptr;
         start = nullptr;
+        saved = nullptr;
         stack.clear();
 
         parse(formula);
