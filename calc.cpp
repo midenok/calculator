@@ -11,15 +11,20 @@ using namespace std;
 
 enum TokenType
 {
+    // order matters (see 'expected')
     END,
-    NUMBER,
-    OPERATOR,
     OPEN_PAREN,
+    NUMBER,
+    FUNCTION,
+    OPERATOR,
     CLOSE_PAREN
 };
 
 typedef long double result_t;
 //typedef long result_t;
+
+#define FUNCTION_DECLARATIONS
+#include "function.h"
 
 struct Token
 {
@@ -35,6 +40,7 @@ struct Token
     {
         result_t number;
         Operator op;
+        Function *func;
     };
 
     Token(TokenType _type) :
@@ -46,8 +52,11 @@ struct Token
 
     Token(char _operat) :
         type { OPERATOR },
-        op { _operat }
-    {}
+        op { _operat } {}
+
+    Token(Function *_func) :
+        type { FUNCTION },
+        func { _func } {}
 
     bool operator== (TokenType _type) const
     {
@@ -95,6 +104,11 @@ struct Token
         }
         throw runtime_error("Wrong operation!");
     }
+    result_t operator() (result_t right) const
+    {
+        assert(type == FUNCTION);
+        return func->eval(right);
+    }
     friend ostream& operator<< (ostream& stream, const Token& self)
     {
         switch (self.type) {
@@ -114,12 +128,12 @@ class Tokenizer
 {
     const char *formula;
     size_t idx = 0;
-    bool number_expected = true;
+    TokenType expected = NUMBER;
 
 public:
     Tokenizer(const char *_formula)
         : formula {_formula}
-    {        
+    {
     }
 
     Tokenizer(string &_formula)
@@ -177,36 +191,50 @@ public:
         if (!formula[idx])
             return END;
 
-        while (formula[idx] == ' ') {
-            ++idx;
-            if (!formula[idx])
+        while (formula[idx] == ' ')
+            if (!formula[++idx])
                 return END;
-        }
 
-        if (number_expected) {
-            if (formula[idx] == '-' || formula[idx] == '+' || isdigit(formula[idx])) {
-                result_t number;
-                idx += get_number(number, &formula[idx]);
-                number_expected = false;
-                return number;
-            }
-            if (formula[idx] == '(') {
+        char c = formula[idx];
+
+        if (expected < OPERATOR) {
+            if (c == '(') {
                 ++idx;
+                expected = NUMBER;
                 return OPEN_PAREN;
             }
-            throw Error("Number expected", idx);
+            if (expected == OPEN_PAREN)
+                throw_error("'(' expected");
+
+            if (c == '-' || c == '+' || isdigit(c)) {
+                result_t number;
+                idx += get_number(number, &formula[idx]);
+                expected = OPERATOR;
+                return number;
+            }
+
+            size_t len;
+            Function *f = Function::find(&formula[idx], len);
+            if (f) {
+                idx += len;
+                expected = OPEN_PAREN;
+                return f;
+            }
+
+            throw Error("Operand expected", idx);
         }
 
-        number_expected = true;
+        expected = NUMBER;
+        ++idx;
 
-        switch (char c = formula[idx++]) {
+        switch (c) {
         case '+':
         case '-':
         case '*':
         case '/':
             return c;
         case ')':
-            number_expected = false;
+            expected = OPERATOR;
             return CLOSE_PAREN;
         }
         throw Error("Operator expected", --idx);
@@ -224,6 +252,21 @@ struct Node
 
     Node(Token t) :
         token {t} {}
+
+    friend ostream& operator<< (ostream& stream, const Node& self)
+    {
+        stream << &self << ": " << self.token << endl;
+        if (self.parent)
+            stream << "  parent: " << self.parent << " (" << self.parent->token << ")" << endl;
+        if (self.right)
+            stream << "  right: " << self.right << " (" << self.right->token << ")" << endl;
+
+        if (self.parent)
+            stream << *self.parent;
+        if (self.right)
+            stream << *self.right;
+        return stream;
+    }
 };
 
 typedef Node::Node_p Node_p;
@@ -255,7 +298,7 @@ class Calc
     vector<StackItem> stack;
 
 public:
-    void parse(Tokenizer &formula)
+    void parse(Tokenizer formula)
     {
         while (Token t = formula.next_token()) {
             if (t == OPEN_PAREN) {
@@ -266,7 +309,7 @@ public:
             }
             if (t == CLOSE_PAREN) {
                 if (stack.empty())
-                    formula.throw_error("Missed '('");
+                    formula.throw_error("buffer::string '('");
                 Node_p old_root = stack.back().root;
                 Node_p old_start = stack.back().start;
                 saved = stack.back().saved;
@@ -275,17 +318,38 @@ public:
                     root->token.op.prioritize = true;
                 if (!old_root)
                     continue;
+                assert(!old_root->parent);
+                // put function into root
+            #if 0
+                if (old_root->right) {
+                    assert(old_root->right->token == FUNCTION);
+                    old_root->parent = old_root->right;
+                    old_root->right = start;
+                    old_root = old_root->parent;
+                } else if (old_root->token == FUNCTION) {
+#if 0
+                    root->parent = old_root;
+                    root = root->parent;
+                    continue;
+#endif
+                    assert(!old_root->right);
+                    old_root->right = start;
+                } else {
+                    assert(!old_root->right);
+                    old_root->right = start;
+                }
+            #endif
                 assert(!old_root->right);
                 old_root->right = start;
                 root = old_root;
                 start = old_start;
                 continue;
             }
-            if (t == NUMBER) {
+            if (t == NUMBER || t == FUNCTION) {
                 if (root) {
                     assert(!root->right);
                     root->right = make_shared<Node>(t);
-                    if (saved) {
+                    if (saved) { // check for FUNCTION
                         root = saved;
                         saved = nullptr;
                     }
@@ -298,7 +362,7 @@ public:
             {   // t == OPERATOR
                 assert(root);
                 Node_p node = make_shared<Node>(t);
-                
+
                 if (t > root->token) {
                     // current operator takes precedence
                     assert(root->right);
@@ -314,9 +378,9 @@ public:
                 }
                 root = node;
             }
-        }
+        } // while
         if (!stack.empty())
-            formula.throw_error("Missed ')'!");
+            formula.throw_error("buffer::string ')'!");
     }
 
     result_t calculate()
@@ -336,6 +400,14 @@ public:
                 result = stack.back().result;
                 stack.pop_back();
             }
+            if (node->token == FUNCTION) {
+                assert(!node->right);
+                cout << "func(" << result << ")";
+                result = node->token(result);
+                cout << " = " << result << endl;
+                node = node->parent;
+                continue;
+            }
             assert(node->right);
             if (node->right->parent) {
                 stack.push_back(StackItem(node, result));
@@ -352,32 +424,78 @@ public:
         return result;
     }
 
-    result_t operator() (Tokenizer formula)
+    void reset()
     {
         root = nullptr;
         start = nullptr;
         stack.clear();
+    }
 
+    result_t operator() (Tokenizer formula)
+    {
+        reset();
         parse(formula);
         result_t result = calculate();
         return result;
     }
+
+    void dumper();
 };
+
+void Calc::dumper()
+{
+    Node_p node = start;
+    result_t result = 0;
+    stack.clear();
+    cout << *start << endl;
+    return;
+    while (node || !stack.empty()) {
+        if (!node) {
+            node = stack.back().root;
+            node->right->parent = nullptr;
+            result = stack.back().result;
+            stack.pop_back();
+        }
+        //cout << "Node: " << *node << endl;
+        //cout << "  parent: " << *node->parent << endl;
+        //cout << "  right: " << *node->right << endl;
+        if (node->right && node->right->parent) {
+            stack.push_back(StackItem(node, result));
+            node = node->right->parent;
+            continue;
+        }
+        node = node->parent;
+    }
+}
 
 void test()
 {
     Calc c;
 
-    result_t res = c("(((100))) - 2 * ((3 + 1) + (2 + 16 / 4)) * (11 - 6 - 1000 * 0)");
-    if (res != 0) {
-        cerr << "Self-test failed!" << endl;
-        exit(1);
+    try {
+        // result_t res = c("(((100))) - 2 * ((3 + 1) + (2 + 16 / 4)) * (11 - 6 - 1000 * 0)");
+        // result_t res = c("1 + sqrt(10 - 2 * 3)");
+        //c.parse("1 + 5* (2 - 3) * 4");
+        c.parse("1 + 2 * (3 + 4 + 5)");
+        c.dumper();
+        result_t res = c.calculate();
+        cout << "Result: " << res << endl;
+        // 2 * (5 - 4 / 2 - 1)
+        if (res != 0) {
+            cerr << "Self-test failed!" << endl;
+            exit(1);
+        }
+    } catch (Tokenizer::Error &e) {
+        cerr << "Parse error:" << endl << e.what() << endl;
+    } catch (domain_error &e) {
+        cerr << e.what() << endl;
     }
+    exit(0);
 }
 
 int main()
 {
-    test();
+    //test();
     string line;
     Calc calc;
 
