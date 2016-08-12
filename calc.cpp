@@ -272,7 +272,6 @@ public:
                     continue;
                 assert(!old_root->right);
                 old_root->right = start;
-                start->right = root; // quick access to sub-root
                 root = old_root;
                 start = old_start;
                 continue;
@@ -293,15 +292,8 @@ public:
                 
                 if (t > root->token) {
                     // current operator takes precedence
-                    Node_p rght = root->right;
-                    assert(rght);
-                    if (rght->parent) {
-                        Node_p subr = rght->right; // sub-root
-                        assert(subr);
-                        subr->parent = node;
-                        rght->right = node; // new sub-root
-                    } else
-                        rght->parent = node;
+                    assert(root->right);
+                    root->right->parent = node;
                 } else {
                     root->parent = node;
                 }
