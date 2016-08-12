@@ -232,16 +232,19 @@ class Calc
 {
     Node_p root;
     Node_p start;
+    Node_p saved; // for returning to lower precedence
 
     struct StackItem
     {
         Node_p root;
         Node_p start;
+        Node_p saved;
         result_t result = 0;
 
-        StackItem(Node_p _root, Node_p _start) :
+        StackItem(Node_p _root, Node_p _start, Node_p _saved) :
             root { _root },
-            start { _start } {}
+            start { _start },
+            saved { _saved } {}
 
         StackItem(Node_p _root, result_t _result) :
             root { _root },
@@ -256,8 +259,9 @@ public:
     {
         while (Token t = formula.next_token()) {
             if (t == OPEN_PAREN) {
-                stack.push_back(StackItem(root, start));
+                stack.push_back(StackItem(root, start, saved));
                 root = nullptr;
+                saved = nullptr;
                 continue;
             }
             if (t == CLOSE_PAREN) {
@@ -265,6 +269,7 @@ public:
                     formula.throw_error("Missed '('");
                 Node_p old_root = stack.back().root;
                 Node_p old_start = stack.back().start;
+                saved = stack.back().saved;
                 stack.pop_back();
                 if (root->token == OPERATOR)
                     root->token.op.prioritize = true;
@@ -280,6 +285,10 @@ public:
                 if (root) {
                     assert(!root->right);
                     root->right = make_shared<Node>(t);
+                    if (saved) {
+                        root = saved;
+                        saved = nullptr;
+                    }
                 } else {
                     root = make_shared<Node>(t);
                     start = root;
@@ -293,7 +302,13 @@ public:
                 if (t > root->token) {
                     // current operator takes precedence
                     assert(root->right);
-                    root->right->parent = node;
+                    if (root->right->right) {
+                        root->right->right->parent = node;
+                    } else {
+                        root->right->parent = node;
+                    }
+                    root->right->right = node;
+                    saved = root;
                 } else {
                     root->parent = node;
                 }
