@@ -220,7 +220,6 @@ struct Node
 
     Token token;
     Node_p parent;
-    Node_p left;
     Node_p right;
 
     Node(Token t) :
@@ -273,7 +272,7 @@ public:
                     continue;
                 assert(!old_root->right);
                 old_root->right = start;
-                start->left = root; // quick access to sub-root
+                start->right = root; // quick access to sub-root
                 root = old_root;
                 start = old_start;
                 continue;
@@ -297,16 +296,14 @@ public:
                     Node_p rght = root->right;
                     assert(rght);
                     if (rght->parent) {
-                        Node_p subr = rght->left; // sub-root
+                        Node_p subr = rght->right; // sub-root
                         assert(subr);
-                        node->left = subr;
                         subr->parent = node;
-                        rght->left = node; // new sub-root
+                        rght->right = node; // new sub-root
                     } else
                         rght->parent = node;
                 } else {
                     root->parent = node;
-                    node->left = root;
                 }
                 root = node;
             }
