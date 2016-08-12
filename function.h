@@ -90,17 +90,17 @@ class Commands :
 const char * name() const override { return name_; } \
 static constexpr const char * name_ = #NAME
 
-class SQRT : FuncRegistrar<SQRT>
-{
-public:
-    DECLARE_NAME(sqrt);
-
-    result_t eval(result_t opnd) override final
-    {
-        return sqrt(opnd);
-    }
-};
-ENABLE(SQRT);
+#define MATH_FUNCTION(NAME) \
+class Math_ ##NAME : FuncRegistrar<Math_ ##NAME> \
+{ \
+public: \
+    DECLARE_NAME(NAME); \
+    result_t eval(result_t opnd) override final \
+    { \
+        return NAME(opnd); \
+    } \
+}; \
+ENABLE(Math_ ##NAME)
 
 class Dump : public CmdRegistrar<Dump>
 {
@@ -111,8 +111,37 @@ public:
 };
 ENABLE(Dump);
 
+MATH_FUNCTION(acos);
+MATH_FUNCTION(asin);
+MATH_FUNCTION(atan);
+MATH_FUNCTION(ceil);
+MATH_FUNCTION(cosh);
+MATH_FUNCTION(cos);
+MATH_FUNCTION(exp2);
+MATH_FUNCTION(expm1);
+MATH_FUNCTION(exp);
+MATH_FUNCTION(abs);
+MATH_FUNCTION(floor);
+MATH_FUNCTION(log10);
+MATH_FUNCTION(log1p);
+MATH_FUNCTION(log2);
+MATH_FUNCTION(logb);
+MATH_FUNCTION(log);
+MATH_FUNCTION(sinh);
+MATH_FUNCTION(sin);
+MATH_FUNCTION(sqrt);
+MATH_FUNCTION(tanh);
+MATH_FUNCTION(tan);
+MATH_FUNCTION(cbrt);
+MATH_FUNCTION(erf);
+MATH_FUNCTION(erfc);
+MATH_FUNCTION(tgamma);
+MATH_FUNCTION(lgamma);
+MATH_FUNCTION(trunc);
+MATH_FUNCTION(round);
+MATH_FUNCTION(nearbyint);
 
-#undef FUNCTION_DECLARATIONS
+#undef MATH_FUNCTION
 #undef ENABLE
 #undef DECLARE_NAME
-
+#undef FUNCTION_DECLARATIONS
