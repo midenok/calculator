@@ -403,6 +403,8 @@ public:
                         assert(!root->right->right->parent);
                         root->right->right->parent = node;
                     } else {
+                        // this branch should be deprecated
+                        // since start->right should always point to root
                         assert(!root->right->parent);
                         root->right->parent = node;
                     }
@@ -410,6 +412,7 @@ public:
                     saved = root;
                 } else {
                     root->parent = node;
+                    start->right = node;
                 }
                 root = node;
             }
@@ -467,6 +470,7 @@ public:
     {
         root = nullptr;
         start = nullptr;
+        saved = nullptr;
         stack.clear();
     }
 
@@ -496,13 +500,7 @@ void test()
     Calc c;
 
     try {
-        // result_t res = c("(((100))) - 2 * ((3 + 1) + (2 + 16 / 4)) * (11 - 6 - 1000 * 0)");
-        // result_t res = c("1 + sqrt(10 - 2 * 3)");
-        //c.parse("1 + 5* (2 - 3) * 4");
-        //c.parse("1 + 2 * (3 + 4 + 5)");
-        //1+2*sqrt(1+8)/(4 + (2 - 3))
-        //  1 - 2 * sqrt(9) + 7
-        c.parse("1 - 2 * sqrt(9) + 7");
+        c.parse("1 + (sin(1) - 3) * 1");
         c.dump();
         result_t res = c.calculate();
         cout << "Result: " << res << endl;
