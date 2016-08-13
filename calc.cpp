@@ -267,7 +267,7 @@ struct Node
     typedef shared_ptr<Node> Node_p;
 
     Token token;
-    Node_p parent;
+    Node_p left;
     Node_p right;
 
     Node(Token t) :
@@ -276,13 +276,13 @@ struct Node
     friend ostream& operator<< (ostream& stream, const Node& self)
     {
         stream << &self << ": " << self.token << endl;
-        if (self.parent)
-            stream << "  parent: " << self.parent << " (" << self.parent->token << ")" << endl;
+        if (self.left)
+            stream << "  left: " << self.left << " (" << self.left->token << ")" << endl;
         if (self.right)
             stream << "  right: " << self.right << " (" << self.right->token << ")" << endl;
 
-        if (self.parent)
-            stream << *self.parent;
+        if (self.left)
+            stream << *self.left;
         if (self.right)
             stream << *self.right;
         return stream;
@@ -293,24 +293,24 @@ typedef Node::Node_p Node_p;
 
 class Calc
 {
+    Node_p last;
     Node_p root;
-    Node_p start;
     Node_p saved; // for returning to lower precedence
 
     struct StackItem
     {
+        Node_p last;
         Node_p root;
-        Node_p start;
         Node_p saved;
         result_t result = 0;
 
-        StackItem(Node_p _root, Node_p _start, Node_p _saved) :
+        StackItem(Node_p _last, Node_p _root, Node_p _saved) :
+            last { _last },
             root { _root },
-            start { _start },
             saved { _saved } {}
 
-        StackItem(Node_p _root, result_t _result) :
-            root { _root },
+        StackItem(Node_p _last, result_t _result) :
+            last { _last },
             result { _result } {}
 
         ~StackItem() {}
@@ -328,8 +328,8 @@ public:
                 continue;
             }
             if (t == OPEN_PAREN) {
-                stack.push_back(StackItem(root, start, saved));
-                root = nullptr;
+                stack.push_back(StackItem(last, root, saved));
+                last = nullptr;
                 saved = nullptr;
                 continue;
             }
@@ -337,84 +337,84 @@ public:
                 if (stack.empty())
                     formula.throw_error("Missed '('");
 
+                Node_p old_last = stack.back().last;
                 Node_p old_root = stack.back().root;
-                Node_p old_start = stack.back().start;
                 Node_p old_saved = stack.back().saved;
                 stack.pop_back();
-                if (root->token == OPERATOR)
-                    root->token.op.prioritize = true;
-                if (!old_root)
+                if (last->token == OPERATOR)
+                    last->token.op.prioritize = true;
+                if (!old_last)
                     continue;
 
-                assert(!old_root->parent);
+                assert(!old_last->left);
 
-                // put function into parens lowest priority root
-                if (old_root->right) {
-                    Node_p lowest_root = saved ? saved : root;
-                    assert(old_root->right->token == FUNCTION);
-                    lowest_root->parent = old_root->right;
-                    start->right = old_root->right;
-                    old_root->right = start;
-                    root = old_saved ? old_saved : old_root;
-                    start = old_start;
+                // put function into parens lowest priority branch
+                if (old_last->right) {
+                    Node_p lowest = saved ? saved : last;
+                    assert(old_last->right->token == FUNCTION);
+                    lowest->left = old_last->right;
+                    root->right = old_last->right;
+                    old_last->right = root;
+                    last = old_saved ? old_saved : old_last;
+                    root = old_root;
                     saved = nullptr;
                     continue;
                 }
-                if (old_root->token == FUNCTION) {
+                if (old_last->token == FUNCTION) {
                     if (saved) {
-                        saved->parent = old_root;
-                        saved = old_root;
+                        saved->left = old_last;
+                        saved = old_last;
                     } else {
-                        root->parent = old_root;
-                        root = old_root;
+                        last->left = old_last;
+                        last = old_last;
                     }
                     continue;
                 }
 
-                assert(!old_root->right);
-                old_root->right = start;
+                assert(!old_last->right);
+                old_last->right = root;
+                last = old_last;
                 root = old_root;
-                start = old_start;
                 saved = old_saved;
                 continue;
             }
             if (t == NUMBER || t == FUNCTION) {
-                if (root) {
-                    assert(!root->right);
-                    root->right = make_shared<Node>(t);
+                if (last) {
+                    assert(!last->right);
+                    last->right = make_shared<Node>(t);
                     if (saved && t == NUMBER) {
-                        root = saved;
+                        last = saved;
                         saved = nullptr;
                     }
                 } else {
-                    root = make_shared<Node>(t);
-                    start = root;
+                    last = make_shared<Node>(t);
+                    root = last;
                 }
                 continue;
             }
             {   // t == OPERATOR
-                assert(root);
+                assert(last);
                 Node_p node = make_shared<Node>(t);
 
-                if (t > root->token) {
+                if (t > last->token) {
                     // current operator takes precedence
-                    assert(root->right);
-                    if (root->right->right) {
-                        assert(!root->right->right->parent);
-                        root->right->right->parent = node;
+                    assert(last->right);
+                    if (last->right->right) {
+                        assert(!last->right->right->left);
+                        last->right->right->left = node;
                     } else {
                         // this branch should be deprecated
                         // since start->right should always point to root
-                        assert(!root->right->parent);
-                        root->right->parent = node;
+                        assert(!last->right->left);
+                        last->right->left = node;
                     }
-                    root->right->right = node;
-                    saved = root;
+                    last->right->right = node;
+                    saved = last;
                 } else {
-                    root->parent = node;
-                    start->right = node;
+                    last->left = node;
+                    root->right = node;
                 }
-                root = node;
+                last = node;
             }
         } // while
 
@@ -427,17 +427,17 @@ public:
 
     result_t calculate()
     {
-        if (!start)
+        if (!root)
             throw domain_error("Empty formula!");
 
         assert(stack.empty());
 
-        result_t result = start->token;
-        Node_p node = start->parent;
+        result_t result = root->token;
+        Node_p node = root->left;
         while (node || !stack.empty()) {
             if (!node) {
-                node = stack.back().root;
-                node->right->parent = nullptr;
+                node = stack.back().last;
+                node->right->left = nullptr;
                 node->right->token = result;
                 result = stack.back().result;
                 stack.pop_back();
@@ -447,20 +447,20 @@ public:
                 cout << node->token << "(" << result << ")";
                 result = node->token(result);
                 cout << " = " << result << endl;
-                node = node->parent;
+                node = node->left;
                 continue;
             }
             assert(node->right);
-            if (node->right->parent) {
+            if (node->right->left) {
                 stack.push_back(StackItem(node, result));
                 result = node->right->token;
-                node = node->right->parent;
+                node = node->right->left;
                 continue;
             }
             cout << result << node->token << node->right->token;
             result = node->token(result, node->right->token);
             cout << " = " << result << endl;
-            node = node->parent;
+            node = node->left;
         }
         cout << endl;
         return result;
@@ -468,8 +468,8 @@ public:
 
     void reset()
     {
+        last = nullptr;
         root = nullptr;
-        start = nullptr;
         saved = nullptr;
         stack.clear();
     }
@@ -484,7 +484,7 @@ public:
 
     void dump() const
     {
-        cout << *start << endl;
+        cout << *root << endl;
     }
 };
 
