@@ -11,15 +11,21 @@ using namespace std;
 
 enum TokenType
 {
+    // order matters (see 'expected')
     END,
-    NUMBER,
-    OPERATOR,
+    COMMAND,
     OPEN_PAREN,
+    NUMBER,
+    FUNCTION,
+    OPERATOR,
     CLOSE_PAREN
 };
 
 typedef long double result_t;
 //typedef long result_t;
+
+#define FUNCTION_DECLARATIONS
+#include "function.h"
 
 struct Token
 {
@@ -35,6 +41,8 @@ struct Token
     {
         result_t number;
         Operator op;
+        Function *func;
+        Command *cmd;
     };
 
     Token(TokenType _type) :
@@ -46,8 +54,15 @@ struct Token
 
     Token(char _operat) :
         type { OPERATOR },
-        op { _operat }
-    {}
+        op { _operat } {}
+
+    Token(Function *_func) :
+        type { FUNCTION },
+        func { _func } {}
+
+    Token(Command *_cmd) :
+        type { COMMAND },
+        cmd { _cmd } {}
 
     bool operator== (TokenType _type) const
     {
@@ -95,6 +110,11 @@ struct Token
         }
         throw runtime_error("Wrong operation!");
     }
+    result_t operator() (result_t right) const
+    {
+        assert(type == FUNCTION);
+        return func->eval(right);
+    }
     friend ostream& operator<< (ostream& stream, const Token& self)
     {
         switch (self.type) {
@@ -103,6 +123,10 @@ struct Token
             break;
         case OPERATOR:
             stream << ' ' << self.op.value << ' ';
+            break;
+        case FUNCTION:
+            stream << self.func->name();
+            break;
         default:;
         }
         return stream;
@@ -114,13 +138,12 @@ class Tokenizer
 {
     const char *formula;
     size_t idx = 0;
-    bool number_expected = true;
+    TokenType expected = COMMAND;
 
 public:
     Tokenizer(const char *_formula)
         : formula {_formula}
-    {        
-    }
+    {}
 
     Tokenizer(string &_formula)
         : formula { _formula.c_str() }
@@ -177,36 +200,60 @@ public:
         if (!formula[idx])
             return END;
 
-        while (formula[idx] == ' ') {
-            ++idx;
-            if (!formula[idx])
+        while (formula[idx] == ' ')
+            if (!formula[++idx])
                 return END;
+
+        if (expected == COMMAND) {
+            size_t len;
+            Command *cmd = Commands::find(&formula[idx], len);
+            if (cmd) {
+                idx += len;
+                expected = NUMBER;
+                return cmd;
+            }
         }
 
-        if (number_expected) {
-            if (formula[idx] == '-' || formula[idx] == '+' || isdigit(formula[idx])) {
-                result_t number;
-                idx += get_number(number, &formula[idx]);
-                number_expected = false;
-                return number;
-            }
-            if (formula[idx] == '(') {
+        char c = formula[idx];
+
+        if (expected < OPERATOR) {
+            if (c == '(') {
                 ++idx;
+                expected = NUMBER;
                 return OPEN_PAREN;
             }
-            throw Error("Number expected", idx);
+            if (expected == OPEN_PAREN)
+                throw_error("'(' expected");
+
+            if (c == '-' || c == '+' || isdigit(c)) {
+                result_t number;
+                idx += get_number(number, &formula[idx]);
+                expected = OPERATOR;
+                return number;
+            }
+
+            size_t len;
+            Function *f = Functions::find(&formula[idx], len);
+            if (f) {
+                idx += len;
+                expected = OPEN_PAREN;
+                return f;
+            }
+
+            throw Error("Operand expected", idx);
         }
 
-        number_expected = true;
+        expected = NUMBER;
+        ++idx;
 
-        switch (char c = formula[idx++]) {
+        switch (c) {
         case '+':
         case '-':
         case '*':
         case '/':
             return c;
         case ')':
-            number_expected = false;
+            expected = OPERATOR;
             return CLOSE_PAREN;
         }
         throw Error("Operator expected", --idx);
@@ -224,6 +271,21 @@ struct Node
 
     Node(Token t) :
         token {t} {}
+
+    friend ostream& operator<< (ostream& stream, const Node& self)
+    {
+        stream << &self << ": " << self.token << endl;
+        if (self.left)
+            stream << "  left: " << self.left << " (" << self.left->token << ")" << endl;
+        if (self.right)
+            stream << "  right: " << self.right << " (" << self.right->token << ")" << endl;
+
+        if (self.left)
+            stream << *self.left;
+        if (self.right)
+            stream << *self.right;
+        return stream;
+    }
 };
 
 typedef Node::Node_p Node_p;
@@ -254,10 +316,16 @@ class Calc
     };
     vector<StackItem> stack;
 
+    Command *command = nullptr;
+
 public:
-    void parse(Tokenizer &formula)
+    void parse(Tokenizer formula)
     {
         while (Token t = formula.next_token()) {
+            if (t == COMMAND) {
+                command = t.cmd;
+                continue;
+            }
             if (t == OPEN_PAREN) {
                 stack.push_back(StackItem(last, root, saved));
                 last = nullptr;
@@ -267,25 +335,53 @@ public:
             if (t == CLOSE_PAREN) {
                 if (stack.empty())
                     formula.throw_error("Missed '('");
+
                 Node_p old_last = stack.back().last;
                 Node_p old_root = stack.back().root;
-                saved = stack.back().saved;
+                Node_p old_saved = stack.back().saved;
                 stack.pop_back();
                 if (last->token == OPERATOR)
                     last->token.op.prioritize = true;
                 if (!old_last)
                     continue;
+
+                assert(!old_last->left);
+
+                // put function into parens lowest priority branch
+                if (old_last->right) {
+                    Node_p lowest = saved ? saved : last;
+                    assert(old_last->right->token == FUNCTION);
+                    lowest->left = old_last->right;
+                    root->right = old_last->right;
+                    old_last->right = root;
+                    last = old_saved ? old_saved : old_last;
+                    root = old_root;
+                    saved = nullptr;
+                    continue;
+                }
+                if (old_last->token == FUNCTION) {
+                    if (saved) {
+                        saved->left = old_last;
+                        saved = old_last;
+                    } else {
+                        last->left = old_last;
+                        last = old_last;
+                    }
+                    continue;
+                }
+
                 assert(!old_last->right);
                 old_last->right = root;
                 last = old_last;
                 root = old_root;
+                saved = old_saved;
                 continue;
             }
-            if (t == NUMBER) {
+            if (t == NUMBER || t == FUNCTION) {
                 if (last) {
                     assert(!last->right);
                     last->right = make_shared<Node>(t);
-                    if (saved) {
+                    if (saved && t == NUMBER) {
                         last = saved;
                         saved = nullptr;
                     }
@@ -298,13 +394,17 @@ public:
             {   // t == OPERATOR
                 assert(last);
                 Node_p node = make_shared<Node>(t);
-                
+
                 if (t > last->token) {
                     // current operator takes precedence
                     assert(last->right);
                     if (last->right->right) {
+                        assert(!last->right->right->left);
                         last->right->right->left = node;
                     } else {
+                        // this branch should be deprecated
+                        // since root->right should always point to last
+                        assert(!last->right->left);
                         last->right->left = node;
                     }
                     last->right->right = node;
@@ -315,7 +415,11 @@ public:
                 }
                 last = node;
             }
-        }
+        } // while
+
+        if (command)
+            command->parse_finished(this);
+
         if (!stack.empty())
             formula.throw_error("Missed ')'!");
     }
@@ -337,6 +441,14 @@ public:
                 result = stack.back().result;
                 stack.pop_back();
             }
+            if (node->token == FUNCTION) {
+                assert(!node->right);
+                cout << node->token << "(" << result << ")";
+                result = node->token(result);
+                cout << " = " << result << endl;
+                node = node->left;
+                continue;
+            }
             assert(node->right);
             if (node->right->left) {
                 stack.push_back(StackItem(node, result));
@@ -349,37 +461,40 @@ public:
             cout << " = " << result << endl;
             node = node->left;
         }
-        cout << endl;
         return result;
     }
 
-    result_t operator() (Tokenizer formula)
+    void reset()
     {
         last = nullptr;
         root = nullptr;
         saved = nullptr;
         stack.clear();
+    }
 
+    result_t operator() (Tokenizer formula)
+    {
+        reset();
         parse(formula);
         result_t result = calculate();
         return result;
     }
+
+    void dump() const
+    {
+        cout << *root << endl;
+    }
 };
 
-void test()
+void Dump::parse_finished(void *opaque)
 {
-    Calc c;
-
-    result_t res = c("(((100))) - 2 * ((3 + 1) + (2 + 16 / 4)) * (11 - 6 - 1000 * 0)");
-    if (res != 0) {
-        cerr << "Self-test failed!" << endl;
-        exit(1);
-    }
+    assert(opaque);
+    static_cast<Calc *>(opaque)->dump();
 }
+
 
 int main()
 {
-    test();
     string line;
     Calc calc;
 
@@ -389,8 +504,9 @@ int main()
             continue;
 
         try {
+            cout << line << endl;
             result_t result = calc(line);
-            cout << "Result: " << result << endl;
+            cout << "Result: " << result << endl << endl;
         } catch (Tokenizer::Error &e) {
             cerr << "Parse error:" << endl << e.what() << endl;
         } catch (domain_error &e) {
